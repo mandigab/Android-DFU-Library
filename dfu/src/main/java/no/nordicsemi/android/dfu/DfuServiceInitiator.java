@@ -27,14 +27,19 @@ package no.nordicsemi.android.dfu;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.ParcelUuid;
+import android.os.Parcelable;
 
 import java.security.InvalidParameterException;
+import java.util.UUID;
 
 /**
  * Starting the DfuService service requires a knowledge of some EXTRA_* constants used to pass parameters to the service.
  * The DfuServiceInitiator class may be used to make this process easier. It provides simple API that covers all low lever operations.
  */
 public class DfuServiceInitiator {
+	public static final int DEFAULT_PRN_VALUE = 12;
+
 	private final String deviceAddress;
 	private String deviceName;
 
@@ -52,6 +57,17 @@ public class DfuServiceInitiator {
 	private int fileType = -1;
 
 	private boolean keepBond;
+	private boolean forceDfu = false;
+	private boolean enableUnsafeExperimentalButtonlessDfu = false;
+
+	private Boolean packetReceiptNotificationsEnabled;
+	private int numberOfPackets = 12;
+
+	private Parcelable[] legacyDfuUuids;
+	private Parcelable[] secureDfuUuids;
+	private Parcelable[] experimentalButtonlessDfuUuids;
+	private Parcelable[] buttonlessDfuWithoutBondSharingUuids;
+	private Parcelable[] buttonlessDfuWithBondSharingUuids;
 
 	/**
 	 * Creates the builder. Use setZip(...), or setBinOrHex(...) methods to specify the file you want to upload.
@@ -92,6 +108,182 @@ public class DfuServiceInitiator {
 	 */
 	public DfuServiceInitiator setKeepBond(final boolean keepBond) {
 		this.keepBond = keepBond;
+		return this;
+	}
+
+	/**
+	 * Enables or disables the Packet Receipt Notification (PRN) procedure.
+	 * <p>By default the PRNs are disabled on devices with Android Marshmallow or newer and enabled on older ones.</p>
+	 * @param enabled true to enabled PRNs, false to disable
+	 * @return the builder
+	 * @see DfuSettingsConstants#SETTINGS_PACKET_RECEIPT_NOTIFICATION_ENABLED
+	 */
+	public DfuServiceInitiator setPacketsReceiptNotificationsEnabled(final boolean enabled) {
+		this.packetReceiptNotificationsEnabled = enabled;
+		return this;
+	}
+
+	/**
+	 * If Packet Receipt Notification procedure is enabled, this method sets number of packets to be sent before
+	 * receiving a PRN. A PRN is used to synchronize the transmitter and receiver.
+	 * @param number number of packets to be sent before receiving a PRN. Defaulted when set to 0.
+	 * @return the builder
+	 * @see #setPacketsReceiptNotificationsEnabled(boolean)
+	 * @see DfuSettingsConstants#SETTINGS_NUMBER_OF_PACKETS
+	 */
+	public DfuServiceInitiator setPacketsReceiptNotificationsValue(final int number) {
+		this.numberOfPackets = number > 0 ? number : DEFAULT_PRN_VALUE;
+		return this;
+	}
+
+	/**
+	 * Setting force DFU to true will prevent from jumping to the DFU Bootloader
+	 * mode in case there is no DFU Version characteristic (Legacy DFU only!). Use it if the DFU operation can be handled by your
+	 * device running in the application mode.
+	 *
+	 * <p>If the DFU Version characteristic exists, the
+	 * information whether to begin DFU operation, or jump to bootloader, is taken from that
+	 * characteristic's value. The value returned equal to 0x0100 (read as: minor=1, major=0, or version 0.1)
+	 * means that the device is in the application mode and buttonless jump to DFU Bootloader is supported.</p>
+	 *
+	 * <p>However, if there is no DFU Version characteristic, a device
+	 * may support only Application update (version from SDK 4.3.0), may support Soft Device, Bootloader
+	 * and Application update but without buttonless jump to bootloader (SDK 6.0.0) or with
+	 * buttonless jump (SDK 6.1.0).</p>
+	 *
+	 * <p>In the last case, the DFU Library determines whether the device is in application mode or in DFU Bootloader mode
+	 * by counting number of services: if no DFU Service found - device is in app mode and does not support
+	 * buttonless jump, if the DFU Service is the only service found (except General Access and General Attribute
+	 * services) - it assumes it is in DFU Bootloader mode and may start DFU immediately, if there is
+	 * at least one service except DFU Service - the device is in application mode and supports buttonless
+	 * jump. In the last case, if you want to perform DFU operation without jumping - call the {@link #setForceDfu(boolean)}
+	 * method with parameter equal to true.</p>
+	 *
+	 * <p>This method is ignored in Secure DFU.</p>
+	 * @param force true to ensure the DFU will start if there is no DFU Version characteristic (Legacy DFU only)
+	 * @return the builder
+	 * @see DfuSettingsConstants#SETTINGS_ASSUME_DFU_NODE
+	 */
+	public DfuServiceInitiator setForceDfu(final boolean force) {
+		this.forceDfu = force;
+		return this;
+	}
+
+	/**
+	 * Set this flag to true to enable experimental buttonless feature in Secure DFU. When the
+	 * experimental Buttonless DFU Service is found on a device, the service will use it to
+	 * switch the device to the bootloader mode, connect to it in that mode and proceed with DFU.
+	 * <p>
+	 * <b>Please, read the information below before setting it to true.</b>
+	 * <p>
+	 * In the SDK 12.x the Buttonless DFU feature for Secure DFU was experimental.
+	 * It is NOT recommended to use it: it was not properly tested, had implementation bugs
+	 * (e.g. <a href="https://devzone.nordicsemi.com/question/100609/sdk-12-bootloader-erased-after-programming/">link</a>) and
+	 * does not required encryption and therefore may lead to DOS attack (anyone can use it to switch the device
+	 * to bootloader mode). However, as there is no other way to trigger bootloader mode on devices
+	 * without a button, this DFU Library supports this service, but the feature must be explicitly enabled here.
+	 * Be aware, that setting this flag to false will no protect your devices from this kind of attacks, as
+	 * an attacker may use another app for that purpose. To be sure your device is secure remove this
+	 * experimental service from your device.
+	 * <p>
+	 * <b>Spec:</b><br>
+	 * Buttonless DFU Service UUID: 8E400001-F315-4F60-9FB8-838830DAEA50<br>
+	 * Buttonless DFU characteristic UUID: 8E400001-F315-4F60-9FB8-838830DAEA50 (the same)<br>
+	 * Enter Bootloader Op Code: 0x01<br>
+	 * Correct return value: 0x20-01-01 , where:<br>
+	 * 0x20 - Response Op Code<br>
+	 * 0x01 - Request Code<br>
+	 * 0x01 - Success<br>
+	 * The device should disconnect and restart in DFU mode after sending the notification.
+	 * <p>
+	 * In SDK 13 this issue will be fixed by a proper implementation (bonding required,
+	 * passing bond information to the bootloader, encryption, well tested). It is recommended to use this
+	 * new service when SDK 13 (or later) is out. TODO fix the docs when SDK 13 is out.
+	 */
+	public DfuServiceInitiator setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(final boolean enable) {
+		this.enableUnsafeExperimentalButtonlessDfu = enable;
+		return this;
+	}
+
+	/**
+	 * Sets custom UUIDs for Legacy DFU and Legacy Buttonless DFU. Use this method if your DFU implementation uses different UUID for at least one of the given UUIDs.
+	 * Parameter set to <code>null</code> will reset the UUID to the default value.
+	 * @param dfuServiceUuid custom Legacy DFU service UUID or null, if default is to be used
+	 * @param dfuControlPointUuid custom Legacy DFU Control Point characteristic UUID or null, if default is to be used
+	 * @param dfuPacketUuid custom Legacy DFU Packet characteristic UUID or null, if default is to be used
+	 * @param dfuVersionUuid custom Legacy DFU Version characteristic UUID or null, if default is to be used (SDK 7.0 - 11.0 only, set null for earlier SDKs)
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setCustomUuidsForLegacyDfu(final UUID dfuServiceUuid, final UUID dfuControlPointUuid, final UUID dfuPacketUuid, final UUID dfuVersionUuid) {
+		final ParcelUuid[] uuids = new ParcelUuid[4];
+		uuids[0] = dfuServiceUuid      != null ? new ParcelUuid(dfuServiceUuid)      : null;
+		uuids[1] = dfuControlPointUuid != null ? new ParcelUuid(dfuControlPointUuid) : null;
+		uuids[2] = dfuPacketUuid       != null ? new ParcelUuid(dfuPacketUuid)       : null;
+		uuids[3] = dfuVersionUuid      != null ? new ParcelUuid(dfuVersionUuid)      : null;
+		legacyDfuUuids = uuids;
+		return this;
+	}
+
+	/**
+	 * Sets custom UUIDs for Secure DFU. Use this method if your DFU implementation uses different UUID for at least one of the given UUIDs.
+	 * Parameter set to <code>null</code> will reset the UUID to the default value.
+	 * @param dfuServiceUuid custom Secure DFU service UUID or null, if default is to be used
+	 * @param dfuControlPointUuid custom Secure DFU Control Point characteristic UUID or null, if default is to be used
+	 * @param dfuPacketUuid custom Secure DFU Packet characteristic UUID or null, if default is to be used
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setCustomUuidsForSecureDfu(final UUID dfuServiceUuid, final UUID dfuControlPointUuid, final UUID dfuPacketUuid) {
+		final ParcelUuid[] uuids = new ParcelUuid[3];
+		uuids[0] = dfuServiceUuid      != null ? new ParcelUuid(dfuServiceUuid)      : null;
+		uuids[1] = dfuControlPointUuid != null ? new ParcelUuid(dfuControlPointUuid) : null;
+		uuids[2] = dfuPacketUuid       != null ? new ParcelUuid(dfuPacketUuid)       : null;
+		secureDfuUuids = uuids;
+		return this;
+	}
+
+	/**
+	 * Sets custom UUIDs for the experimental Buttonless DFU Service from SDK 12.x. Use this method if your DFU implementation uses different UUID for at least one of the given UUIDs.
+	 * Parameter set to <code>null</code> will reset the UUID to the default value.
+	 * <p>Remember to call {@link #setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(boolean)} with parameter <code>true</code> if you intent to use this service.</p>
+	 * @param buttonlessDfuServiceUuid custom Buttonless DFU service UUID or null, if default is to be used
+	 * @param buttonlessDfuControlPointUuid custom Buttonless DFU characteristic UUID or null, if default is to be used
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setCustomUuidsForExperimentalButtonlessDfu(final UUID buttonlessDfuServiceUuid, final UUID buttonlessDfuControlPointUuid) {
+		final ParcelUuid[] uuids = new ParcelUuid[2];
+		uuids[0] = buttonlessDfuServiceUuid      != null ? new ParcelUuid(buttonlessDfuServiceUuid)      : null;
+		uuids[1] = buttonlessDfuControlPointUuid != null ? new ParcelUuid(buttonlessDfuControlPointUuid) : null;
+		experimentalButtonlessDfuUuids = uuids;
+		return this;
+	}
+
+	/**
+	 * Sets custom UUIDs for the Buttonless DFU Service from SDK 14 (or later). Use this method if your DFU implementation uses different UUID for at least one of the given UUIDs.
+	 * Parameter set to <code>null</code> will reset the UUID to the default value.
+	 * @param buttonlessDfuServiceUuid custom Buttonless DFU service UUID or null, if default is to be used
+	 * @param buttonlessDfuControlPointUuid custom Buttonless DFU characteristic UUID or null, if default is to be used
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setCustomUuidsForButtonlessDfuWithBondSharing(final UUID buttonlessDfuServiceUuid, final UUID buttonlessDfuControlPointUuid) {
+		final ParcelUuid[] uuids = new ParcelUuid[2];
+		uuids[0] = buttonlessDfuServiceUuid      != null ? new ParcelUuid(buttonlessDfuServiceUuid)      : null;
+		uuids[1] = buttonlessDfuControlPointUuid != null ? new ParcelUuid(buttonlessDfuControlPointUuid) : null;
+		buttonlessDfuWithBondSharingUuids = uuids;
+		return this;
+	}
+
+	/**
+	 * Sets custom UUIDs for the Buttonless DFU Service from SDK 13. Use this method if your DFU implementation uses different UUID for at least one of the given UUIDs.
+	 * Parameter set to <code>null</code> will reset the UUID to the default value.
+	 * @param buttonlessDfuServiceUuid custom Buttonless DFU service UUID or null, if default is to be used
+	 * @param buttonlessDfuControlPointUuid custom Buttonless DFU characteristic UUID or null, if default is to be used
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setCustomUuidsForButtonlessDfuWithoutBondSharing(final UUID buttonlessDfuServiceUuid, final UUID buttonlessDfuControlPointUuid) {
+		final ParcelUuid[] uuids = new ParcelUuid[2];
+		uuids[0] = buttonlessDfuServiceUuid      != null ? new ParcelUuid(buttonlessDfuServiceUuid)      : null;
+		uuids[1] = buttonlessDfuControlPointUuid != null ? new ParcelUuid(buttonlessDfuControlPointUuid) : null;
+		buttonlessDfuWithoutBondSharingUuids = uuids;
 		return this;
 	}
 
@@ -238,6 +430,7 @@ public class DfuServiceInitiator {
 	 * Sets the URI or path to the Init file. The init file for DFU Bootloader version pre-0.5 (SDK 4.3, 6.0, 6.1) contains only the CRC-16 of the firmware.
 	 * Bootloader version 0.5 or newer requires the Extended Init Packet. If the URI and path are not null the URI will be used.
 	 * @param initFileUri the URI of the init file
+	 * @param initFilePath the path of the init file
 	 * @return the builder
 	 */
 	@Deprecated
@@ -250,7 +443,7 @@ public class DfuServiceInitiator {
 	 * @param context the application context
 	 * @param service the class derived from the BaseDfuService
 	 */
-	public void start(final Context context, final Class<? extends DfuBaseService> service) {
+	public DfuServiceController start(final Context context, final Class<? extends DfuBaseService> service) {
 		if (fileType == -1)
 			throw new UnsupportedOperationException("You must specify the firmware file before starting the service");
 
@@ -268,8 +461,30 @@ public class DfuServiceInitiator {
 		intent.putExtra(DfuBaseService.EXTRA_INIT_FILE_PATH, initFilePath);
 		intent.putExtra(DfuBaseService.EXTRA_INIT_FILE_RES_ID, initFileResId);
 		intent.putExtra(DfuBaseService.EXTRA_KEEP_BOND, keepBond);
+		intent.putExtra(DfuBaseService.EXTRA_FORCE_DFU, forceDfu);
+		intent.putExtra(DfuBaseService.EXTRA_UNSAFE_EXPERIMENTAL_BUTTONLESS_DFU, enableUnsafeExperimentalButtonlessDfu);
+		if (packetReceiptNotificationsEnabled != null) {
+			intent.putExtra(DfuBaseService.EXTRA_PACKET_RECEIPT_NOTIFICATIONS_ENABLED, packetReceiptNotificationsEnabled);
+			intent.putExtra(DfuBaseService.EXTRA_PACKET_RECEIPT_NOTIFICATIONS_VALUE, numberOfPackets);
+		} else {
+			// For backwards compatibility:
+			// If the setPacketsReceiptNotificationsEnabled(boolean) has not been called, the PRN state and value are taken from
+			// SharedPreferences the way they were read in DFU Library in 1.0.3 and before, or set to default values.
+			// Default values: PRNs enabled on Android 4.3 - 5.1 and disabled starting from Android 6.0. Default PRN value is 12.
+		}
+		if (legacyDfuUuids != null)
+			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_LEGACY_DFU, legacyDfuUuids);
+		if (secureDfuUuids != null)
+			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_SECURE_DFU, secureDfuUuids);
+		if (experimentalButtonlessDfuUuids != null)
+			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_EXPERIMENTAL_BUTTONLESS_DFU, experimentalButtonlessDfuUuids);
+		if (buttonlessDfuWithoutBondSharingUuids != null)
+			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_BUTTONLESS_DFU_WITHOUT_BOND_SHARING, buttonlessDfuWithoutBondSharingUuids);
+		if (buttonlessDfuWithBondSharingUuids != null)
+			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_BUTTONLESS_DFU_WITH_BOND_SHARING, buttonlessDfuWithBondSharingUuids);
 
 		context.startService(intent);
+		return new DfuServiceController(context);
 	}
 
 	private DfuServiceInitiator init(final Uri initFileUri, final String initFilePath, final int initFileResId) {

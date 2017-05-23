@@ -31,7 +31,6 @@ import no.nordicsemi.android.dfu.DfuBaseService;
  * See: https://android.googlesource.com/platform/external/bluetooth/bluedroid/+/android-5.1.0_r1/stack/include/gatt_api.h (and other versions) for details.
  */
 public class GattError {
-
 	// Starts at line 106 of gatt_api.h file
 	/**
 	 * Converts the connection status given by the {@link android.bluetooth.BluetoothGattCallback#onConnectionStateChange(android.bluetooth.BluetoothGatt, int, int)} to error name.
@@ -147,44 +146,38 @@ public class GattError {
 				return "TOO MANY OPEN CONNECTIONS";
 			case DfuBaseService.ERROR_DEVICE_DISCONNECTED:
 				return "DFU DEVICE DISCONNECTED";
+			case DfuBaseService.ERROR_FILE_NOT_FOUND:
+				return "DFU FILE NOT FOUND";
 			case DfuBaseService.ERROR_FILE_ERROR:
 				return "DFU FILE ERROR";
 			case DfuBaseService.ERROR_FILE_INVALID:
 				return "DFU NOT A VALID HEX FILE";
-			case DfuBaseService.ERROR_FILE_SIZE_INVALID:
-				return "DFU FILE NOT WORD ALIGNED";
 			case DfuBaseService.ERROR_FILE_IO_EXCEPTION:
 				return "DFU IO EXCEPTION";
-			case DfuBaseService.ERROR_FILE_NOT_FOUND:
-				return "DFU FILE NOT FOUND";
 			case DfuBaseService.ERROR_SERVICE_DISCOVERY_NOT_STARTED:
 				return "DFU SERVICE DISCOVERY NOT STARTED";
 			case DfuBaseService.ERROR_SERVICE_NOT_FOUND:
 				return "DFU SERVICE NOT FOUND";
 			case DfuBaseService.ERROR_CHARACTERISTICS_NOT_FOUND:
 				return "DFU CHARACTERISTICS NOT FOUND";
+			case DfuBaseService.ERROR_INVALID_RESPONSE:
+				return "DFU INVALID RESPONSE";
 			case DfuBaseService.ERROR_FILE_TYPE_UNSUPPORTED:
 				return "DFU FILE TYPE NOT SUPPORTED";
 			case DfuBaseService.ERROR_BLUETOOTH_DISABLED:
 				return "BLUETOOTH ADAPTER DISABLED";
 			case DfuBaseService.ERROR_INIT_PACKET_REQUIRED:
 				return "INIT PACKET REQUIRED";
+			case DfuBaseService.ERROR_FILE_SIZE_INVALID:
+				return "DFU FILE NOT WORD ALIGNED";
+			case DfuBaseService.ERROR_DEVICE_NOT_BONDED:
+				return "DFU DEVICE NOT BONDED";
 			default:
+				// Deprecated: use Legacy or SecureDfuError parser
 				if ((DfuBaseService.ERROR_REMOTE_MASK & error) > 0) {
-					switch (error & (~DfuBaseService.ERROR_REMOTE_MASK)) {
-						case DfuBaseService.DFU_STATUS_INVALID_STATE:
-							return "REMOTE DFU INVALID STATE";
-						case DfuBaseService.DFU_STATUS_NOT_SUPPORTED:
-							return "REMOTE DFU NOT SUPPORTED";
-						case DfuBaseService.DFU_STATUS_DATA_SIZE_EXCEEDS_LIMIT:
-							return "REMOTE DFU DATA SIZE EXCEEDS LIMIT";
-						case DfuBaseService.DFU_STATUS_CRC_ERROR:
-							return "REMOTE DFU INVALID CRC ERROR";
-						case DfuBaseService.DFU_STATUS_OPERATION_FAILED:
-							return "REMOTE DFU OPERATION FAILED";
-					}
+					return LegacyDfuError.parse(error);
 				}
-				return "UNKNOWN (" + error + ")";
 		}
+		return "UNKNOWN (" + error + ")";
 	}
 }
