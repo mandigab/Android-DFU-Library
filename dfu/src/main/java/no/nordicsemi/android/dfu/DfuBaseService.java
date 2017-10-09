@@ -22,6 +22,7 @@
 
 package no.nordicsemi.android.dfu;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.IntentService;
 import android.app.NotificationManager;
@@ -94,6 +95,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 	/* package */ static boolean DEBUG = false;
 
 	public static final int NOTIFICATION_ID = 283; // a random number
+	public static final String NOTIFICATION_CHANNEL_DFU = "dfu";
 
 	/**
 	 * The address of the device to update.
@@ -685,6 +687,14 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 
 			logi("Action received: " + action);
 			sendLogBroadcast(LOG_LEVEL_DEBUG, "[Broadcast] Action received: " + action);
+			/*
+			Handling the disconnection event here could lead to race conditions, as it also may (most probably will)
+			be delivered to onConnectionStateChange below.
+			See: https://github.com/NordicSemiconductor/Android-DFU-Library/issues/55
+
+			Note: This broadcast is now received on all 3 ACL events!
+				  Don't assume DISCONNECT here.
+
 			mConnectionState = STATE_DISCONNECTED;
 
 			if (mDfuServiceImpl != null)
@@ -694,6 +704,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			synchronized (mLock) {
 				mLock.notifyAll();
 			}
+			*/
 		}
 	};
 
@@ -808,6 +819,13 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			if (mDfuServiceImpl != null)
 				mDfuServiceImpl.getGattCallback().onDescriptorRead(gatt, descriptor, status);
 		}
+
+		@SuppressLint("NewApi")
+		@Override
+		public void onMtuChanged(final BluetoothGatt gatt, final int mtu, final int status) {
+			if (mDfuServiceImpl != null)
+				mDfuServiceImpl.getGattCallback().onMtuChanged(gatt, mtu, status);
+		}
 	};
 
 	public DfuBaseService() {
@@ -832,7 +850,11 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 		manager.registerReceiver(mDfuActionReceiver, actionFilter);
 		registerReceiver(mDfuActionReceiver, actionFilter); // Additionally we must register this receiver as a non-local to get broadcasts from the notification actions
 
-		final IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+		final IntentFilter filter = new IntentFilter();
+		// As we no longer perform any action based on this broadcast, we may log all ACL events
+		filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+		filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECT_REQUESTED);
+		filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
 		registerReceiver(mConnectionStateBroadcastReceiver, filter);
 
 		final IntentFilter bondFilter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
@@ -915,6 +937,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			mbrSize = DfuSettingsConstants.SETTINGS_DEFAULT_MBR_SIZE;
 		}
 
+		startForeground();
 		sendLogBroadcast(LOG_LEVEL_VERBOSE, "DFU service started");
 
 		/*
@@ -1139,6 +1162,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			} catch (final IOException e) {
 				// do nothing
 			}
+			stopForeground(false);
 		}
 	}
 
@@ -1281,7 +1305,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 
 		// We have to wait until device gets disconnected or an error occur
 		waitUntilDisconnected();
-		sendLogBroadcast(DfuBaseService.LOG_LEVEL_INFO, "Disconnected");
+		sendLogBroadcast(LOG_LEVEL_INFO, "Disconnected");
 	}
 
 	/**
@@ -1375,8 +1399,9 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			return;
 
 		// the notification may not be refreshed too quickly as the ABORT button becomes not clickable
+		// If new state is an end-state, update regardless so it will not stick around in "Disconnecting" state
 		final long now = SystemClock.elapsedRealtime();
-		if (now - mLastNotificationTime < 250)
+		if (now - mLastNotificationTime < 250 && !(PROGRESS_COMPLETED == progress || PROGRESS_ABORTED == progress))
 			return;
 		mLastNotificationTime = now;
 
@@ -1384,7 +1409,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 		final String deviceAddress = mDeviceAddress;
 		final String deviceName = mDeviceName != null ? mDeviceName : getString(R.string.dfu_unknown_name);
 
-		final NotificationCompat.Builder builder = new NotificationCompat.Builder(this).setSmallIcon(android.R.drawable.stat_sys_upload).setOnlyAlertOnce(true);//.setLargeIcon(largeIcon);
+		final NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_DFU).setSmallIcon(android.R.drawable.stat_sys_upload).setOnlyAlertOnce(true);//.setLargeIcon(largeIcon);
 		// Android 5
 		builder.setColor(Color.GRAY);
 
@@ -1457,7 +1482,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 		final String deviceAddress = mDeviceAddress;
 		final String deviceName = mDeviceName != null ? mDeviceName : getString(R.string.dfu_unknown_name);
 
-		final NotificationCompat.Builder builder = new NotificationCompat.Builder(this)
+		final NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_DFU)
 				.setSmallIcon(android.R.drawable.stat_sys_upload)
 				.setOnlyAlertOnce(true)
 				.setColor(Color.RED)
@@ -1478,6 +1503,23 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 
 		final NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 		manager.notify(NOTIFICATION_ID, builder.build());
+	}
+
+	private void startForeground() {
+		final NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_DFU)
+				.setSmallIcon(android.R.drawable.stat_sys_upload)
+				.setContentTitle(getString(R.string.dfu_status_initializing)).setContentText(getString(R.string.dfu_status_starting_msg))
+				.setColor(Color.GRAY)
+				.setOngoing(true);
+		// update the notification
+		final Intent targetIntent = new Intent(this, getNotificationTarget());
+		targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+		targetIntent.putExtra(EXTRA_DEVICE_ADDRESS, mDeviceAddress);
+		targetIntent.putExtra(EXTRA_DEVICE_NAME, mDeviceName);
+		final PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, targetIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+		builder.setContentIntent(pendingIntent);
+
+		startForeground(NOTIFICATION_ID, builder.build());
 	}
 
 	/**
@@ -1543,7 +1585,7 @@ public abstract class DfuBaseService extends IntentService implements DfuProgres
 			broadcast.putExtra(EXTRA_DATA, error & ~ERROR_CONNECTION_STATE_MASK);
 			broadcast.putExtra(EXTRA_ERROR_TYPE, ERROR_TYPE_COMMUNICATION_STATE);
 		} else if ((error & ERROR_REMOTE_MASK) > 0) {
-			broadcast.putExtra(EXTRA_DATA, error);
+			broadcast.putExtra(EXTRA_DATA, error & ~ERROR_REMOTE_MASK);
 			broadcast.putExtra(EXTRA_ERROR_TYPE, ERROR_TYPE_DFU_REMOTE);
 		} else {
 			broadcast.putExtra(EXTRA_DATA, error);

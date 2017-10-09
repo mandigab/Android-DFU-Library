@@ -24,11 +24,16 @@
 
 package no.nordicsemi.android.dfu;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.ParcelUuid;
 import android.os.Parcelable;
+import android.support.annotation.RequiresApi;
 
 import java.security.InvalidParameterException;
 import java.util.UUID;
@@ -39,6 +44,11 @@ import java.util.UUID;
  */
 public class DfuServiceInitiator {
 	public static final int DEFAULT_PRN_VALUE = 12;
+
+	/** Constant used to narrow the scope of the update to system components (SD+BL) only. */
+	public static final int SCOPE_SYSTEM_COMPONENTS = 7578;
+	/** Constant used to narrow the scope of the update to application only. */
+	public static final int SCOPE_APPLICATION = 3542;
 
 	private final String deviceAddress;
 	private String deviceName;
@@ -178,6 +188,25 @@ public class DfuServiceInitiator {
 	 */
 	public DfuServiceInitiator setForceDfu(final boolean force) {
 		this.forceDfu = force;
+		return this;
+	}
+
+	/**
+	 * This method allows to narrow the update to selected parts from the ZIP, for example
+	 * to allow only application update from a ZIP file that has SD+BL+App. System components scope include the Softdevice and/or
+	 * the Bootloader (they can't be separated as they are packed in a single bin file and the library does not know whether it
+	 * contains only the softdevice, the bootloader or both) Application scope includes the application only.
+	 * @param scope the update scope, one of {@link #SCOPE_SYSTEM_COMPONENTS} or {@link #SCOPE_APPLICATION}.
+	 * @return the builder
+	 */
+	public DfuServiceInitiator setScope(final int scope) {
+		if (DfuBaseService.MIME_TYPE_ZIP.equals(mimeType))
+			throw new UnsupportedOperationException("Scope can be set only for a ZIP file");
+		if (scope == SCOPE_APPLICATION)
+			fileType = DfuBaseService.TYPE_APPLICATION;
+		else if (scope == SCOPE_SYSTEM_COMPONENTS)
+			fileType = DfuBaseService.TYPE_SOFT_DEVICE | DfuBaseService.TYPE_BOOTLOADER;
+		else throw new UnsupportedOperationException("Unknown scope");
 		return this;
 	}
 
@@ -496,7 +525,13 @@ public class DfuServiceInitiator {
 		if (buttonlessDfuWithBondSharingUuids != null)
 			intent.putExtra(DfuBaseService.EXTRA_CUSTOM_UUIDS_FOR_BUTTONLESS_DFU_WITH_BOND_SHARING, buttonlessDfuWithBondSharingUuids);
 
-		context.startService(intent);
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			// On Android Oreo and above the service must be started as a foreground service to make it accessible from
+			// a killed application.
+			context.startForegroundService(intent);
+		} else {
+			context.startService(intent);
+		}
 		return new DfuServiceController(context);
 	}
 
@@ -524,5 +559,16 @@ public class DfuServiceInitiator {
 			this.initFileResId = 0;
 		}
 		return this;
+	}
+
+	@RequiresApi(api = Build.VERSION_CODES.O)
+	public static void createDfuNotificationChannel(final Context context) {
+		final NotificationChannel channel = new NotificationChannel(DfuBaseService.NOTIFICATION_CHANNEL_DFU, context.getString(R.string.dfu_channel_name), NotificationManager.IMPORTANCE_LOW);
+		channel.setDescription(context.getString(R.string.dfu_channel_description));
+		channel.setShowBadge(false);
+		channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+
+		final NotificationManager notificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+		notificationManager.createNotificationChannel(channel);
 	}
 }

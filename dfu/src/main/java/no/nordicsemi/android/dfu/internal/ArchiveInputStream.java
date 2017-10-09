@@ -367,19 +367,18 @@ public class ArchiveInputStream extends ZipInputStream {
 	}
 
 	/**
+	 * Returns number of bytes read until now.
+	 */
+	public int getBytesRead() {
+		return bytesRead;
+	}
+
+	/**
 	 * Returns the CRC32 of the part of the firmware that was already read.
 	 * @return the CRC
 	 */
 	public long getCrc32() {
 		return crc32.getValue();
-	}
-
-	/**
-	 * Returns the manifest object if it was specified in the ZIP file.
-	 * @return the manifest object
-	 */
-	public Manifest getManifest() {
-		return manifest;
 	}
 
 	/**
